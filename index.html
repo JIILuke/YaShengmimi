@@ -731,7 +731,8 @@ tr[data-row="product"].starred { border-left: 3px solid var(--apple-orange); }
 .apple-date-clear:hover { background: var(--gray4); }
 
 .apple-picker-popover {
-  position: absolute; top: calc(100% + 6px); left: 0; z-index: 9999;
+  position: fixed;
+  z-index: 99999;
   background: rgba(255,255,255,0.98);
   border-radius: var(--r-lg);
   box-shadow: 0 8px 32px rgba(0,0,0,0.16), 0 2px 8px rgba(0,0,0,0.08);
@@ -1934,6 +1935,30 @@ function setAppleDateValue(wrapper, hidden, dateStr) {
   if (hidden.classList.contains('log-ship')) recalcLogistics(hidden);
 }
 
+/* ── 将弹窗 portal 到 body，用 fixed 定位完全脱离表格 overflow 限制 ── */
+function positionPopover(pop, triggerEl) {
+  const POP_W = 248, POP_H = 310, GAP = 6;
+  const r = triggerEl.getBoundingClientRect();
+  const vw = window.innerWidth, vh = window.innerHeight;
+
+  // 默认：弹窗左对齐触发元素，出现在下方
+  let top  = r.bottom + GAP;
+  let left = r.left;
+
+  // 若右侧溢出则右对齐
+  if (left + POP_W > vw - 8) left = r.right - POP_W;
+  // 若左侧溢出则强制贴左边
+  if (left < 8) left = 8;
+
+  // 若下方空间不足则显示在上方
+  if (top + POP_H > vh - 8) top = r.top - POP_H - GAP;
+  // 若上方也不足则贴顶
+  if (top < 8) top = 8;
+
+  pop.style.top  = top  + 'px';
+  pop.style.left = left + 'px';
+}
+
 function buildCalendarPopover(wrapper, hidden) {
   closeAllPopovers();
   let viewDate = hidden.value ? new Date(hidden.value+'T00:00:00') : new Date();
@@ -1941,18 +1966,28 @@ function buildCalendarPopover(wrapper, hidden) {
   const MONTHS_CN = ['一月','二月','三月','四月','五月','六月','七月','八月','九月','十月','十一月','十二月'];
   const WEEKS_CN  = ['日','一','二','三','四','五','六'];
 
+  // 触发元素（显示框）用于计算位置
+  const triggerEl = wrapper.querySelector('.apple-date-display') || wrapper;
+
   function render() {
-    const old = wrapper.querySelector('.apple-picker-popover'); if(old) old.remove();
-    wrapper.style.position = 'relative';
-    const pop = document.createElement('div'); pop.className = 'apple-picker-popover'; wrapper.appendChild(pop); activePopover = pop;
+    // 清除旧弹窗（可能在 body 上）
+    document.querySelectorAll('.apple-picker-popover').forEach(p => p.remove());
+
+    // 创建弹窗并直接挂到 body —— 彻底脱离任何 overflow 限制
+    const pop = document.createElement('div');
+    pop.className = 'apple-picker-popover';
+    pop._wrapper = wrapper; // 标记归属，用于切换判断
+    document.body.appendChild(pop);
+    activePopover = pop;
+
     const yr = viewDate.getFullYear(), mo = viewDate.getMonth();
     const todayD = today0();
 
     // 导航栏
     const nav = document.createElement('div'); nav.className = 'apple-picker-nav';
-    const btnP = document.createElement('button'); btnP.innerHTML='<i class="fas fa-chevron-left"></i>';
+    const btnP = document.createElement('button'); btnP.type='button'; btnP.innerHTML='<i class="fas fa-chevron-left"></i>';
     btnP.onclick = e => { e.stopPropagation(); if(viewMode==='days')viewDate.setMonth(mo-1); else if(viewMode==='months')viewDate.setFullYear(yr-1); else viewDate.setFullYear(yr-12); render(); };
-    const btnN = document.createElement('button'); btnN.innerHTML='<i class="fas fa-chevron-right"></i>';
+    const btnN = document.createElement('button'); btnN.type='button'; btnN.innerHTML='<i class="fas fa-chevron-right"></i>';
     btnN.onclick = e => { e.stopPropagation(); if(viewMode==='days')viewDate.setMonth(mo+1); else if(viewMode==='months')viewDate.setFullYear(yr+1); else viewDate.setFullYear(yr+12); render(); };
     const title = document.createElement('div'); title.className='apple-picker-month-year';
     if(viewMode==='days') title.textContent=`${yr}年${mo+1}月`;
@@ -2005,12 +2040,8 @@ function buildCalendarPopover(wrapper, hidden) {
       scr.appendChild(grid); pop.appendChild(scr);
     }
 
-    // 位置修正
-    requestAnimationFrame(() => {
-      const r=pop.getBoundingClientRect();
-      if(r.bottom>window.innerHeight-8){pop.style.top='auto';pop.style.bottom='calc(100% + 6px)';}
-      if(r.right>window.innerWidth-8){pop.style.left='auto';pop.style.right='0';}
-    });
+    // 用 fixed 坐标精确定位（在 body 上，不受任何滚动/overflow 影响）
+    positionPopover(pop, triggerEl);
   }
   render();
 }
@@ -2043,7 +2074,12 @@ function bindAppleDatePickers(scope) {
 
     display.addEventListener('click', e => {
       e.stopPropagation();
-      activePopover && wrapper.contains(activePopover) ? closeAllPopovers() : buildCalendarPopover(wrapper, hidden);
+      // 用 _wrapper 标记判断当前弹窗是否属于本 wrapper
+      if (activePopover && activePopover._wrapper === wrapper) {
+        closeAllPopovers();
+      } else {
+        buildCalendarPopover(wrapper, hidden);
+      }
     });
     display.addEventListener('keydown', e => { if(e.key==='Enter'||e.key===' '){e.preventDefault();buildCalendarPopover(wrapper,hidden);} });
     if (clearBtn) clearBtn.addEventListener('click', e => { e.stopPropagation(); setAppleDateValue(wrapper, hidden, ''); });
@@ -2051,8 +2087,15 @@ function bindAppleDatePickers(scope) {
 }
 
 document.addEventListener('click', e => {
-  if (activePopover && !e.target.closest('[data-apple-date]')) closeAllPopovers();
+  if (!activePopover) return;
+  // 点击弹窗内部 或 触发元素本身 → 不关闭
+  if (e.target.closest('.apple-picker-popover')) return;
+  if (e.target.closest('[data-apple-date]')) return;
+  closeAllPopovers();
 });
+
+// 滚动时关闭弹窗（防止位置错位）
+window.addEventListener('scroll', () => { if(activePopover) closeAllPopovers(); }, true);
 
 /* ============================================================
    营销节点选择器
